@@ -330,6 +330,25 @@ namespace MediaBrowser.Controller.Entities
         /// <returns>Task.</returns>
         protected virtual async Task ValidateChildrenInternal(IProgress<double> progress, bool recursive, bool refreshChildMetadata, bool allowRemoveRoot, MetadataRefreshOptions refreshOptions, IDirectoryService directoryService, CancellationToken cancellationToken)
         {
+            await ValidateChildrenInternal(progress, recursive, refreshChildMetadata, allowRemoveRoot, refreshOptions, directoryService, cancellationToken, new HashSet<string>()).ConfigureAwait(false);
+        }
+
+        private async Task ValidateChildrenInternal(IProgress<double> progress, bool recursive, bool refreshChildMetadata, bool allowRemoveRoot, MetadataRefreshOptions refreshOptions, IDirectoryService directoryService, CancellationToken cancellationToken, HashSet<string> visitedPaths)
+        {
+            // Protection contre la récursion infinie avec un set de chemins visités
+            if (!string.IsNullOrEmpty(Path) && !visitedPaths.Add(Path))
+            {
+                Logger.LogWarning("Circular reference detected in folder validation for path: {Path}", Path);
+                return;
+            }
+
+            // Protection supplémentaire contre une profondeur excessive
+            if (visitedPaths.Count > 100)
+            {
+                Logger.LogWarning("Maximum recursion depth exceeded in folder validation for path: {Path}", Path);
+                return;
+            }
+
             if (recursive)
             {
                 ProviderManager.OnRefreshStart(this);
@@ -337,13 +356,19 @@ namespace MediaBrowser.Controller.Entities
 
             try
             {
-                await ValidateChildrenInternal2(progress, recursive, refreshChildMetadata, allowRemoveRoot, refreshOptions, directoryService, cancellationToken).ConfigureAwait(false);
+                await ValidateChildrenInternal2(progress, recursive, refreshChildMetadata, allowRemoveRoot, refreshOptions, directoryService, cancellationToken, visitedPaths).ConfigureAwait(false);
             }
             finally
             {
                 if (recursive)
                 {
                     ProviderManager.OnRefreshComplete(this);
+                }
+
+                // Retirer le chemin du set quand on remonte
+                if (!string.IsNullOrEmpty(Path))
+                {
+                    visitedPaths.Remove(Path);
                 }
             }
         }
@@ -365,7 +390,7 @@ namespace MediaBrowser.Controller.Entities
             return true;
         }
 
-        private async Task ValidateChildrenInternal2(IProgress<double> progress, bool recursive, bool refreshChildMetadata, bool allowRemoveRoot, MetadataRefreshOptions refreshOptions, IDirectoryService directoryService, CancellationToken cancellationToken)
+        private async Task ValidateChildrenInternal2(IProgress<double> progress, bool recursive, bool refreshChildMetadata, bool allowRemoveRoot, MetadataRefreshOptions refreshOptions, IDirectoryService directoryService, CancellationToken cancellationToken, HashSet<string> visitedPaths)
         {
             if (!IsLibraryFolderAccessible(directoryService, this, allowRemoveRoot))
             {
@@ -499,7 +524,7 @@ namespace MediaBrowser.Controller.Entities
                     validChildrenNeedGeneration = false;
                 }
 
-                await ValidateSubFolders(validChildren.OfType<Folder>().ToList(), directoryService, innerProgress, cancellationToken).ConfigureAwait(false);
+                await ValidateSubFolders(validChildren.OfType<Folder>().ToList(), directoryService, innerProgress, cancellationToken, visitedPaths).ConfigureAwait(false);
             }
 
             if (refreshChildMetadata)
@@ -590,11 +615,12 @@ namespace MediaBrowser.Controller.Entities
         /// <param name="directoryService">The directory service.</param>
         /// <param name="progress">The progress.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
+        /// <param name="visitedPaths">Set of visited folder paths to prevent infinite recursion.</param>
         /// <returns>Task.</returns>
-        private async Task ValidateSubFolders(IList<Folder> children, IDirectoryService directoryService, IProgress<double> progress, CancellationToken cancellationToken)
+        private async Task ValidateSubFolders(IList<Folder> children, IDirectoryService directoryService, IProgress<double> progress, CancellationToken cancellationToken, HashSet<string> visitedPaths)
         {
             await RunTasks(
-                (folder, innerProgress) => folder.ValidateChildrenInternal(innerProgress, true, false, false, null, directoryService, cancellationToken),
+                (folder, innerProgress) => folder.ValidateChildrenInternal(innerProgress, true, false, false, null, directoryService, cancellationToken, visitedPaths),
                 children,
                 progress,
                 cancellationToken).ConfigureAwait(false);
